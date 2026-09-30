@@ -43,7 +43,20 @@ cat subdomains.txt | ipdanglr
 ```bash
 # verbose: also show OK and ERROR results
 cat subdomains.txt | ipdanglr -v
+
+# tune concurrency and the TLS dial timeout
+cat subdomains.txt | ipdanglr -c 50 -t 3s
 ```
+
+Input may be bare hostnames, `host:port`, or full URLs; the host is extracted automatically.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-c` | `20` | concurrent workers |
+| `-t` | `5s` | TLS dial timeout |
+| `-v` | `false` | show OK and ERROR results, not just mismatches |
 
 Subdomains are read one per line from stdin. Lines beginning with `#` are ignored.
 
