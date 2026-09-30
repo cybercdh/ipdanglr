@@ -6,13 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
-
-const concurrency = 20
 
 // ANSI colors
 const (
@@ -31,14 +30,14 @@ type result struct {
 	mismatch  bool
 }
 
-func check(subdomain string) result {
-	host := subdomain
-	if h, _, err := net.SplitHostPort(subdomain); err == nil {
-		host = h
+func check(subdomain string, timeout time.Duration) result {
+	host, ok := hostFromInput(subdomain)
+	if !ok {
+		return result{subdomain: subdomain, err: "could not parse host"}
 	}
 
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", host+":443", &tls.Config{
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, "443"), &tls.Config{
 		InsecureSkipVerify: true, // inspect even invalid/expired certs
 		ServerName:         host,
 	})
@@ -63,6 +62,27 @@ func check(subdomain string) result {
 		sans:      sans,
 		mismatch:  mismatch,
 	}
+}
+
+// hostFromInput reduces an input line to a bare hostname. It accepts a plain
+// host, host:port, or a full URL, so output from tools that emit URLs still
+// works. Returns false for anything with no usable host.
+func hostFromInput(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+	if strings.Contains(line, "://") {
+		u, err := url.Parse(line)
+		if err != nil || u.Hostname() == "" {
+			return "", false
+		}
+		return u.Hostname(), true
+	}
+	if h, _, err := net.SplitHostPort(line); err == nil && h != "" {
+		return h, true
+	}
+	return line, true
 }
 
 // certCoversHost reports whether the given CN or SANs cover the host.
@@ -121,7 +141,14 @@ func printResult(r result, verbose bool) {
 
 func main() {
 	verbose := flag.Bool("v", false, "verbose: show all results, not just mismatches")
+	workers := flag.Int("c", 20, "number of concurrent workers")
+	timeout := flag.Duration("t", 5*time.Second, "TLS dial timeout")
 	flag.Parse()
+
+	if *workers < 1 {
+		fmt.Fprintf(os.Stderr, "-c must be at least 1 (got %d)\n", *workers)
+		os.Exit(2)
+	}
 
 	var subdomains []string
 	scanner := bufio.NewScanner(os.Stdin)
@@ -141,18 +168,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Checking %d subdomain(s) with concurrency=%d...\n\n", len(subdomains), concurrency)
+	fmt.Fprintf(os.Stderr, "Checking %d subdomain(s) with concurrency=%d...\n\n", len(subdomains), *workers)
 
-	jobs := make(chan string, concurrency)
+	jobs := make(chan string, *workers)
 	results := make(chan result, len(subdomains))
 
 	var wg sync.WaitGroup
-	for range concurrency {
+	for range *workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for sub := range jobs {
-				results <- check(sub)
+				results <- check(sub, *timeout)
 			}
 		}()
 	}
